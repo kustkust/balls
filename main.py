@@ -1,3 +1,4 @@
+# ruff: noqa: E741
 import os
 import random
 from dataclasses import dataclass
@@ -5,7 +6,8 @@ from dataclasses import dataclass
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import pygame
-from pygame import Color, Vector2, display, draw, event
+from pygame import Color, Vector2, display, draw, event, Surface
+from pygame.font import Font
 from pygame.time import Clock
 
 G = 500.0
@@ -20,18 +22,55 @@ class Circle:
 
 @dataclass
 class Ball(Circle):
-    d: Vector2
+    v: Vector2
     color: Color
 
     def update(self, dt: float) -> None:
-        self.c += self.d * dt + (0, G * dt * dt / 2)
-        self.d.y += G * dt
-        self.d -= self.d.normalize() * S * (self.d.length()) * dt  # slowdown
+        self.c += self.v * dt + (0, G * dt * dt / 2)
+        self.v.y += G * dt
+        self.v -= self.v.normalize() * S * (self.v.length()) * dt  # slowdown
+        if self.v.length() < 0.001:
+            self.v = Vector2()
+
+
+def collide(b1: Ball, b2: Ball) -> None:
+    d = b1.c - b2.c
+    l = d.length()
+    if l > b1.r + b2.r or l == 0:
+        return
+    n = d.normalize()
+    d22 = b2.v - b1.v
+    c = d22 * n
+    b1.v += n * c
+    b2.v -= n * c
+    b1.c -= n * (l - b1.r - b2.r) / 3
+    b2.c += n * (l - b1.r - b2.r) / 3
+
+
+def write_lines(
+    *text: str,
+    font: Font,
+    color: Color | str = Color("white"),
+    bg: Color | str = Color(0, 0, 0, 64),
+) -> Surface:
+    texts = []
+    p = Vector2()
+    for t in text:
+        tmp = font.render(t, False, color)
+        texts.append((tmp, Vector2(0, p.y)))
+        p.y += tmp.get_size()[1]
+        p.x = max(p.x, tmp.get_size()[0])
+    s = Surface(p, pygame.SRCALPHA)
+    s.fill(bg)
+    for t, p in texts:
+        s.blit(t, p)
+    return s
 
 
 def main() -> None:
     pygame.init()
     font = pygame.font.SysFont("Courier New", 16)
+    pygame.display.set_caption("balls")
     screen = pygame.display.set_mode((800, 600))
     size = Vector2(screen.get_size())
     big = Circle(size / 2, (size / 2).y * 0.9)
@@ -42,6 +81,7 @@ def main() -> None:
     clock = Clock()
     p_start: Vector2 | None = None
     p_finish: Vector2 = Vector2()
+    new_r = 10
     while run:
         dt = clock.tick(60) / 1000
         fps = clock.get_fps()
@@ -52,21 +92,33 @@ def main() -> None:
                 case pygame.KEYDOWN:
                     if e.key == pygame.K_ESCAPE:
                         run = False
+                    if e.key == pygame.K_r:
+                        balls = []
                 case pygame.MOUSEBUTTONDOWN:
-                    p_start = Vector2(e.pos)
+                    if e.button == pygame.BUTTON_LEFT:
+                        p_start = Vector2(e.pos)
+                        p_finish = Vector2(e.pos)
                 case pygame.MOUSEMOTION:
-                    p_finish = Vector2(e.pos)
+                    if p_start is not None:
+                        p_finish = Vector2(e.pos)
                 case pygame.MOUSEBUTTONUP:
-                    p_finish = Vector2(e.pos)
-                    assert p_start is not None
-                    ball = Ball(
-                        c=p_start,
-                        r=10,
-                        d=10 * (p_start - p_finish),
-                        color=Color(random.randint(0, 255**4)),
-                    )
-                    balls.append(ball)
-                    p_start = None
+                    if e.button == pygame.BUTTON_LEFT:
+                        p_finish = Vector2(e.pos)
+                        if p_start is not None:
+                            ball = Ball(
+                                c=p_start,
+                                r=new_r,
+                                v=10 * (p_start - p_finish),
+                                color=Color(random.randint(0, 255**4)),
+                            )
+                            balls.append(ball)
+                            p_start = None
+                    if e.button == pygame.BUTTON_WHEELDOWN:
+                        if p_start is not None and new_r > 1:
+                            new_r -= 1
+                    if e.button == pygame.BUTTON_WHEELUP:
+                        if p_start is not None and new_r < 100:
+                            new_r += 1
 
         for ball in balls:
             ball.update(dt)
@@ -74,8 +126,12 @@ def main() -> None:
             if d.length() + ball.r >= big.r:
                 n = d.normalize()
                 ball.c -= (d.length() + ball.r - big.r) * n
-                c = ball.d * n
-                ball.d -= 2 * c * n
+                c = ball.v * n
+                ball.v -= 2 * c * n
+
+        for i in range(len(balls)):
+            for j in range(i + 1, len(balls)):
+                collide(balls[i], balls[j])
 
         screen.fill("black")
         for ball in balls:
@@ -84,8 +140,23 @@ def main() -> None:
         draw.circle(screen, "white", big.c, 1)
         if p_start is not None:
             draw.aaline(screen, "white", p_start, p_finish)
-            draw.circle(screen, "white", p_start, 4)
-        screen.blit(font.render(f"{fps=:.1f}", False, "white"), (0, 0))
+            draw.circle(screen, "white", p_start, new_r)
+        e = 0
+        p = Vector2()
+        for ball in balls:
+            d = ball.v.length()
+            e += d * d
+            p += ball.v
+        screen.blit(
+            write_lines(
+                f"{fps=:.1f}",
+                f"E={e:.3f}",
+                f"p=({p.x:.3f},{p.y:.3f})",
+                font=font,
+                color="white",
+            ),
+            (0, 0),
+        )
         display.flip()
 
 
