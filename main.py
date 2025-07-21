@@ -1,8 +1,9 @@
 # ruff: noqa: E741
 import colorsys
+from math import cos, pi, sin
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -16,27 +17,23 @@ from pygame.time import Clock
 from pygame_gui import UIManager
 from pygame_gui.elements import UITextBox
 
+from geom import Circle, Line, circle_line_collide
 from record import PygameRecord
 
-G = 500.0
+G = 0.0
 S = 0.1
-
-
-@dataclass
-class Circle:
-    c: Vector2
-    r: float
 
 
 @dataclass
 class Ball(Circle):
     v: Vector2
     color: Color
+    d: Vector2 = field(default_factory=Vector2)
+    a: Vector2 = field(default_factory=Vector2)
 
 
-def collide(b1: Ball, b2: Ball) -> None:
+def collide_wrong(b1: Ball, b2: Ball) -> None:
     d = b1.c - b2.c
-    # m1, m2 = b1.r * b1.r, b2.r * b2.r
     l = d.length()
     if l > b1.r + b2.r or l == 0:
         return
@@ -47,6 +44,36 @@ def collide(b1: Ball, b2: Ball) -> None:
     b2.v -= n * c
     b1.c -= n * (l - b1.r - b2.r) / 3
     b2.c += n * (l - b1.r - b2.r) / 3
+
+
+def collide(b1: Ball, b2: Ball) -> None:
+    d = b1.c - b2.c
+    l = d.length()
+    if l > b1.r + b2.r or l == 0:
+        return
+    m1, m2 = b1.r * b1.r, b2.r * b2.r
+    v1, v2 = b1.v.length(), b2.v.length()
+    t1, t2 = b1.v.angle_rad, b2.v.angle_rad
+    f = d.rotate(0).angle_rad
+
+    def calc(
+        m1: float, m2: float, v1: float, v2: float, t1: float, t2: float
+    ) -> Vector2:
+        tmp1 = (v1 * cos(t1 - f) * (m1 - m2) + 2 * m2 * v2 * cos(t2 - f)) / (m1 + m2)
+        tmp2 = v1 * sin(t1 - f)
+        return Vector2(
+            tmp1 * cos(f) + tmp2 * cos(f + pi / 2),
+            tmp1 * sin(f) + tmp2 * sin(f + pi / 2),
+        )
+
+    b1.v = calc(m1, m2, v1, v2, t1, t2)
+    b2.v = calc(m2, m1, v2, v1, t2, t1)
+    n = d.normalize()
+    b1.c -= n * (l - b1.r - b2.r) / 2
+    b2.c += n * (l - b1.r - b2.r) / 2
+
+    # E = (m1 * v1.length_squared() + m2 * v2.length_squared())/2
+    # p = m1 * v1 + m2 *v2
 
 
 def write_lines(
@@ -102,14 +129,26 @@ def ease_out_quint(t: float) -> float:
     return 1 - (t * t * t * t * t)
 
 
+def calc_parabola(p: Vector2, v: Vector2, n: int, dt: float = 0.016) -> list[Vector2]:
+    res: list[Vector2] = [Vector2()] * (n + 1)
+    res[0] = p
+    a = Vector2(0.0, G)
+    for i in range(n):
+        t = dt * i
+        res[i + 1] = p + v * t + (a * t * t) / 2
+    return res
+
+
 def main() -> None:
     pygame.init()
-    # font = pygame.font.SysFont("Courier New", 16)
     pygame.display.set_caption("balls")
     screen = pygame.display.set_mode((1280, 720))
     size = Vector2(screen.get_size())
     big = Circle(size / 2, (size / 2).y * 0.9)
     balls: list[Ball] = []
+    balls.append(Ball(big.c.copy() - (50, 0), 10, Vector2(50, 0), Color("red")))
+    balls.append(Ball(big.c.copy() + (50, 0), 10, Vector2(-50, 0), Color("red")))
+    balls.append(Ball(big.c.copy(), 10, Vector2(0, 0), Color("red")))
     # balls.append(Ball(big.c.copy(), 10, Vector2(0, 0), Color("red")))
 
     run = True
@@ -150,12 +189,31 @@ def main() -> None:
     manager.preload_fonts([my_font])
     bound = Rect((0, 0), (-1, -1))
     t = """fps={fps:.1f}<br>frame_time={frame_time:.5f}<br>recording={recording}"""
-    tb = UITextBox(
-        "",
-        bound,
-        manager=manager,
-    )
+    tb = UITextBox("", bound, manager=manager)
     # pygame_gui.elements.UIScrollingContainer()
+    curve: list[Vector2] = []
+
+    def calc_curve(p_start: Vector2, p_finish: Vector2) -> list[Vector2]:
+        curve = calc_parabola(p_start, 10 * (p_start - p_finish), 300)
+        i = 0
+        for i in range(1, len(curve)):
+            if big.c.distance_to(curve[i]) > big.r:
+                l1 = Line.from_2_points(curve[i], curve[i - 1])
+                if l1 is None:
+                    break
+                match circle_line_collide(big, l1):
+                    case (p,):
+                        curve[i] = p
+                        i += 1
+                    case (p1, p2):
+                        d = p1 - curve[i - 1]
+                        if d * (curve[i] - curve[i - 1]) > 0:
+                            curve[i] = p1
+                        else:
+                            curve[i] = p2
+                        i += 1
+                break
+        return curve[:i]
 
     update = True
     while run:
@@ -182,6 +240,7 @@ def main() -> None:
                     if e.button == pygame.BUTTON_LEFT:
                         p_start = Vector2(e.pos)
                         p_finish = Vector2(e.pos)
+                        curve = calc_curve(p_start, p_finish)
                     if e.button == pygame.BUTTON_RIGHT:
                         p = Vector2(e.pos)
                         iss = []
@@ -193,6 +252,7 @@ def main() -> None:
                 case pygame.MOUSEMOTION:
                     if p_start is not None:
                         p_finish = Vector2(e.pos)
+                        curve = calc_curve(p_start, p_finish)
                 case pygame.MOUSEBUTTONUP:
                     if e.button == pygame.BUTTON_LEFT:
                         p_finish = Vector2(e.pos)
@@ -220,7 +280,7 @@ def main() -> None:
         manager.update(dt)
         if update:
             for ball in balls:
-                ball.c += ball.v * dt  + (0, G * dt * dt / 2)
+                ball.c += ball.v * dt + (0, G * dt * dt / 2)
                 d = ball.c - big.c
                 # ball.v += d / big.r * G * dt
                 ball.v.y += G * dt
@@ -238,6 +298,12 @@ def main() -> None:
             for i in range(len(balls)):
                 for j in range(i + 1, len(balls)):
                     collide(balls[i], balls[j])
+
+            for ball in balls:
+                ball.c += ball.d
+                ball.v += ball.a
+                ball.d = Vector2()
+                ball.a = Vector2()
 
             for ball in balls:
                 d = ball.c - big.c
@@ -260,6 +326,8 @@ def main() -> None:
         if p_start is not None:
             draw.aaline(screen, "white", p_start, p_finish)
             draw.circle(screen, "white", p_start, new_r)
+            if len(curve) >= 2:
+                draw.aalines(screen, "white", False, curve)
         # tt = write_lines(
         #     f"{fps=:.1f}",
         #     f"{frame_time=:.5f}",
